@@ -58,10 +58,12 @@ BLOCK = "\u2588"                            # esptool's progress-bar glyph
 
 SHOTS = {
     "1-flash.png": ("Terminal - flashing the firmware", [
-        sh("python3 -m pip install esptool"),
+        sh("python3 -m venv mistral-clock-venv"),
+        sh("source mistral-clock-venv/bin/activate"),
+        sh("python -m pip install esptool"),
         out("..."),
-        sh(f"esptool --chip esp32c6 --port {PORT} write-flash 0x0 mistral-clock-v{VERSION}.bin"),
-        out("esptool v5.3.0"),
+        sh(f"python -m esptool --chip esp32c6 --port {PORT} write-flash 0x0 mistral-clock-v{VERSION}.bin"),
+        out("esptool v5.4.0"),
         out(f"Connected to ESP32-C6 on {PORT}:"),
         out("Chip type:          ESP32-C6FH8 (QFN32) (revision v0.2)"),
         out("Features:           Wi-Fi 6, BT 5 (LE), IEEE802.15.4, Single Core + LP Core, 160MHz, Embedded Flash 8MB"),
@@ -74,7 +76,7 @@ SHOTS = {
         out("Hard resetting via RTS pin..."),
     ]),
     "2-terminal.png": ("Terminal - the clock's console", [
-        sh(f"python3 -m serial.tools.miniterm {PORT} 115200"),
+        sh(f"python -m serial.tools.miniterm {PORT} 115200"),
         out(f"--- Miniterm on {PORT}  115200,8,N,1 ---", DIM),
         out("--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H ---", DIM),
         out(""),

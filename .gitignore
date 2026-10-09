@@ -14,3 +14,6 @@ __pycache__/
 .DS_Store
 backup/
 vendor/
+
+# Python virtual environment
+.venv/

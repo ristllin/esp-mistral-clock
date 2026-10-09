@@ -63,17 +63,30 @@ materials, the print settings and more photos are in
 ### 1. Flash the firmware
 
 Download `mistral-clock-v1.0.0.bin` from the
-[latest release](../../releases/latest) and install the flashing tool:
+[latest release](../../releases/latest), then open a terminal in the folder
+you downloaded it to and install the flashing tool.
+
+**macOS and Linux:** recent Python versions only let `pip` install into a
+virtual environment, so make one next to the download:
 
 ```sh
-python3 -m pip install esptool
+cd ~/Downloads
+python3 -m venv mistral-clock-venv
+source mistral-clock-venv/bin/activate
+python -m pip install esptool
 ```
+
+If you open a new terminal later (for step 2, or to flash again), run
+`source mistral-clock-venv/bin/activate` in that folder first.
+
+**Windows:** run `py -m pip install esptool`, then type `py` wherever these
+steps say `python`.
 
 Plug the board into your computer and find its port. This lists only ports
 whose USB ID (`303A:1001`) matches the ESP32-C6's built-in USB:
 
 ```sh
-python3 -m serial.tools.list_ports 303A:1001
+python -m serial.tools.list_ports 303A:1001
 ```
 
 ```text
@@ -91,7 +104,7 @@ port. On Linux, also add yourself to the `dialout` group
 Flash, using your port in place of `/dev/cu.usbmodem1101`:
 
 ```sh
-esptool --chip esp32c6 --port /dev/cu.usbmodem1101 write-flash 0x0 mistral-clock-v1.0.0.bin
+python -m esptool --chip esp32c6 --port /dev/cu.usbmodem1101 write-flash 0x0 mistral-clock-v1.0.0.bin
 ```
 
 ![Flashing the firmware](docs/setup/1-flash.png)
@@ -105,7 +118,7 @@ image also erases saved settings, so a re-flash means adding Wi-Fi again.
 above:
 
 ```sh
-python3 -m serial.tools.miniterm /dev/cu.usbmodem1101 115200
+python -m serial.tools.miniterm /dev/cu.usbmodem1101 115200
 ```
 
 Press **Enter** to see the menu. Quit with **Ctrl+]**.

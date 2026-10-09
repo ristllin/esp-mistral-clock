@@ -53,7 +53,12 @@ app) to `.pio/build/esp32-c6-touch-lcd-1-47/firmware.factory.bin`; that is
 the release `.bin`, flashed at offset `0x0`.
 
 The host tools need Python 3 with `pyserial` (and `Pillow` for the image
-tools): `python3 -m pip install pyserial Pillow`.
+tools), installed in a virtual environment:
+
+```sh
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install pyserial Pillow
+```
 
 ## Back up the stock firmware
 
@@ -61,9 +66,9 @@ The board ships with Waveshare's demo firmware. To keep a copy before the
 first flash (keep it private; it is Waveshare's firmware):
 
 ```sh
-esptool --chip esp32c6 --port PORT --baud 921600 read-flash 0x0 0x800000 stock-8mb.bin
+python -m esptool --chip esp32c6 --port PORT --baud 921600 read-flash 0x0 0x800000 stock-8mb.bin
 # restore later with:
-esptool --chip esp32c6 --port PORT --baud 921600 write-flash 0x0 stock-8mb.bin
+python -m esptool --chip esp32c6 --port PORT --baud 921600 write-flash 0x0 stock-8mb.bin
 ```
 
 ## Console
@@ -193,8 +198,8 @@ the log):
 ```sh
 export CLOCK_TEST_WIFI_SSID='<test network SSID>'
 export CLOCK_TEST_WIFI_PASS='<test network password>'
-python3 tools/validate_e2e.py        # about 8 minutes; exit code 0 = all checks passed
-python3 tools/console_check.py
+python tools/validate_e2e.py        # about 8 minutes; exit code 0 = all checks passed
+python tools/console_check.py
 ```
 
 ## Design assets and licences
