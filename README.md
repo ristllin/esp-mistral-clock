@@ -63,19 +63,34 @@ materials, the print settings and more photos are in
 ### 1. Flash the firmware
 
 Download `mistral-clock-v1.0.0.bin` from the
-[latest release](../../releases/latest), plug the board into your computer and
-find its port:
-
-| System | How to find the port | Looks like |
-|---|---|---|
-| macOS | `ls /dev/cu.usbmodem*` | `/dev/cu.usbmodem1101` |
-| Linux | `ls /dev/ttyACM*` | `/dev/ttyACM0` |
-| Windows | Device Manager, Ports (COM & LPT) | `COM5` |
-
-Then install the flashing tool and flash (replace the port with yours):
+[latest release](../../releases/latest) and install the flashing tool:
 
 ```sh
 python3 -m pip install esptool
+```
+
+Plug the board into your computer and find its port. This lists only ports
+whose USB ID (`303A:1001`) matches the ESP32-C6's built-in USB:
+
+```sh
+python3 -m serial.tools.list_ports 303A:1001
+```
+
+```text
+Filtered list with regexp: '303A:1001'
+1 ports found
+/dev/cu.usbmodem1101
+```
+
+The last line is the port: something like `/dev/cu.usbmodem1101` on macOS,
+`/dev/ttyACM0` on Linux or `COM5` on Windows. If it says `0 ports found`, try
+another USB cable (charge-only cables are the usual culprit) or another USB
+port. On Linux, also add yourself to the `dialout` group
+(`sudo usermod -aG dialout $USER`, then log out and back in).
+
+Flash, using your port in place of `/dev/cu.usbmodem1101`:
+
+```sh
 esptool --chip esp32c6 --port /dev/cu.usbmodem1101 write-flash 0x0 mistral-clock-v1.0.0.bin
 ```
 
@@ -86,7 +101,8 @@ image also erases saved settings, so a re-flash means adding Wi-Fi again.
 
 ### 2. Open the clock's console
 
-`esptool` installed a small terminal program with it:
+`esptool` installed a small terminal program with it. Use the same port as
+above:
 
 ```sh
 python3 -m serial.tools.miniterm /dev/cu.usbmodem1101 115200
@@ -168,7 +184,7 @@ switches back to automatic.
 
 | Problem | Try |
 |---|---|
-| No port appears | Use a data USB cable; try another USB port |
+| No port appears (`0 ports found`) | Use a data USB cable; try another USB port; on Linux, join the `dialout` group |
 | `esptool` cannot connect | Unplug, hold the **BOOT** button while plugging back in, then flash again |
 | Clock shows `--:--` / "time not synced" | It is not online yet: `wifi status`, then check the name and password |
 | Weather looks wrong for your area | `loc` to check the location; set it exactly (see Location) |
