@@ -3,7 +3,17 @@
 The clock is a single off-the-shelf board. The optional 3D-printed case turns
 it into a small retro desktop computer, with the screen in the monitor.
 
-![3D-printed case](case-preview.png)
+<table>
+  <tr>
+    <td><img src="case-photo-angle.jpg" width="260" alt="Printed case, home screen, three-quarter view"></td>
+    <td><img src="case-photo-front.jpg" width="260" alt="Printed case, home screen, front view"></td>
+    <td><img src="case-photo-saver.jpg" width="260" alt="Printed case, screensaver"></td>
+  </tr>
+</table>
+
+The case as printed, in grey PLA. The plate in the slicer:
+
+![Both case parts on the print plate](case-preview.png)
 
 ## Bill of materials
 

@@ -215,7 +215,7 @@ src/assets/     generated pixel art (C headers)
 src/fonts/      LVGL bitmap fonts converted from assets/fonts
 components/     board support and LCD/touch drivers from the Waveshare demo
 assets/         source fonts and the Mistral "M" reference
-hardware/       3D-printable case (3MF, STL), bill of materials
+hardware/       3D-printable case (3MF, STL), bill of materials, photos
 docs/           demo GIF, screen recordings, setup screenshots, this page
 tools/          host tools (see above); tools/sim = host scene simulator
 ```

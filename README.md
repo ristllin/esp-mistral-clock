@@ -44,9 +44,19 @@ size). Each clip links to the original MP4.
 | **2.4 GHz Wi-Fi** | The ESP32-C6 has no 5 GHz radio |
 | A USB power adapter (optional) | After setup the clock only needs power |
 
-No soldering, no case required. A 3D-printable retro computer case is in
-[`hardware/`](hardware/README.md), with the full bill of materials and print
-settings.
+No soldering, no case required.
+
+### Optional: 3D-printed case
+
+<a href="hardware/README.md"><img src="hardware/case-photo-saver.jpg" width="300" align="right" alt="The clock in its 3D-printed retro computer case, showing the sleeping-cat screensaver"></a>
+
+The board fits in a small 3D-printed retro computer: the screen sits in the
+monitor and the USB-C cable leaves from the side. It prints in two parts on
+any FDM printer. The ready-to-slice 3MF, the STL, the full bill of
+materials, the print settings and more photos are in
+[`hardware/`](hardware/README.md).
+
+<br clear="right">
 
 ## Setup (about 10 minutes)
 

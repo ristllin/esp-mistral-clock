@@ -41,8 +41,8 @@ Mistral AI.
 ## Media and hardware
 
 The recordings in `docs/media/` and `docs/demo.gif` show this firmware's own
-rendering. The case in `hardware/` was designed for this project. Both are
-covered by the top-level `LICENSE.md`.
+rendering. The case in `hardware/` and its photos were made for this
+project. All of them are covered by the top-level `LICENSE.md`.
 
 ## Third-party code and data
 
