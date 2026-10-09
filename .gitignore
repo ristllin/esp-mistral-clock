@@ -1,0 +1,16 @@
+# Build artifacts
+.pio/
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.*
+managed_components/
+# Local logs and captures
+logs/
+# ESP-IDF generated
+src/sdkconfig.h
+__pycache__/
+*.pyc
+.DS_Store
+backup/
+vendor/
