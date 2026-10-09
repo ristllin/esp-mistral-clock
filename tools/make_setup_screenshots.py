@@ -58,8 +58,8 @@ BLOCK = "\u2588"                            # esptool's progress-bar glyph
 
 SHOTS = {
     "1-flash.png": ("Terminal - flashing the firmware", [
-        sh("python3 -m venv mistral-clock-venv"),
-        sh("source mistral-clock-venv/bin/activate"),
+        sh("python3 -m venv venv"),
+        sh("source venv/bin/activate"),
         sh("python -m pip install esptool"),
         out("..."),
         sh(f"python -m esptool --chip esp32c6 --port {PORT} write-flash 0x0 mistral-clock-v{VERSION}.bin"),

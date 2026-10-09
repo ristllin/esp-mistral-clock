@@ -62,24 +62,26 @@ materials, the print settings and more photos are in
 
 ### 1. Flash the firmware
 
-Download `mistral-clock-v1.0.0.bin` from the
-[latest release](../../releases/latest), then open a terminal in the folder
-you downloaded it to and install the flashing tool.
+Make a folder for the clock, download the firmware into it and install the
+flashing tool there.
 
 **macOS and Linux:** recent Python versions only let `pip` install into a
-virtual environment, so make one next to the download:
+virtual environment, so the folder gets one:
 
 ```sh
-cd ~/Downloads
-python3 -m venv mistral-clock-venv
-source mistral-clock-venv/bin/activate
+mkdir -p ~/mistral-clock && cd ~/mistral-clock
+curl -LO https://github.com/ristllin/esp-mistral-clock/releases/latest/download/mistral-clock-v1.0.0.bin
+python3 -m venv venv
+source venv/bin/activate
 python -m pip install esptool
 ```
 
 If you open a new terminal later (for step 2, or to flash again), run
-`source mistral-clock-venv/bin/activate` in that folder first.
+`cd ~/mistral-clock && source venv/bin/activate` first.
 
-**Windows:** run `py -m pip install esptool`, then type `py` wherever these
+**Windows:** make a `mistral-clock` folder, save `mistral-clock-v1.0.0.bin`
+from the [latest release](../../releases/latest) into it, open a terminal
+there and run `py -m pip install esptool`. Then type `py` wherever these
 steps say `python`.
 
 Plug the board into your computer and find its port. This lists only ports
