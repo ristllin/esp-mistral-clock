@@ -147,9 +147,9 @@ static void register_core_commands(void)
  * one is refused, never run with the character missing. Single curly
  * quotes are refused too: folding ’ to ' would silently save the wrong
  * name (e.g. an iPhone hotspot "Roy’s iPhone"). The password argument of
- * `wifi add <ssid> <pass>` is not echoed: a fixed "****" is printed once
- * instead (passwords are never printed or logged); the real line still
- * reaches esp_console_run. */
+ * `wifi add <ssid> <pass>` and `wifi add-eap <ssid> <user> <pass>` is not
+ * echoed: a fixed "****" is printed once instead (passwords are never
+ * printed or logged); the real line still reaches esp_console_run. */
 
 /* Stand-in stored in s_line for a non-ASCII character the console cannot
  * take (one slot per character, so backspace removes it whole). A line
@@ -167,16 +167,17 @@ static TickType_t s_last_input;
 static bool s_menu_armed;          /* menu prints on the next input byte */
 static bool s_host_seen;           /* host connection already announced */
 
-/* Is the cursor inside the password token of `wifi add <ssid> <pass>`?
- * Tokens: 0=wifi 1=add 2=ssid 3=pass (and beyond, masked as well). The line
- * is tokenized with the same state machine as esp_console_split_argv
+/* Is the cursor inside the password token of `wifi add <ssid> <pass>` or
+ * `wifi add-eap <ssid> <user> <pass>`? Tokens: 0=wifi 1=add 2=ssid 3=pass,
+ * or 0=wifi 1=add-eap 2=ssid 3=user 4=pass (and beyond, masked as well).
+ * The line is tokenized with the same state machine as esp_console_split_argv
  * (spaces, double quotes, backslash escapes), so no spelling of the command
  * that the console accepts can bypass the mask. */
 static bool cursor_in_password(void)
 {
     enum { SP, ARG, QUOTED } st = SP;
     bool esc = false;
-    char t[2][6] = { "", "" };     /* first two tokens, truncated */
+    char t[2][8] = { "", "" };     /* first two tokens, truncated */
     size_t tl = 0;
     int tok = -1;
     for (size_t i = 0; i < s_len; i++) {
@@ -205,7 +206,9 @@ static bool cursor_in_password(void)
         }
     }
     int cur = (st == SP) ? tok + 1 : tok;   /* token the next byte joins */
-    return cur >= 3 && !strcmp(t[0], "wifi") && !strcmp(t[1], "add");
+    if (strcmp(t[0], "wifi") != 0) { return false; }
+    return (cur >= 3 && !strcmp(t[1], "add")) ||
+           (cur >= 4 && !strcmp(t[1], "add-eap"));
 }
 
 static void submit_line(void)

@@ -183,9 +183,25 @@ the same way, any time, from any computer: plug in USB, open the console
 | `wifi reorder "<name>" <priority>` | Change a network's priority |
 | `wifi status` | Current connection |
 
+### Work networks with a username (WPA2-Enterprise)
+
+Office networks that ask for a username and password (PEAP or EAP-TTLS) work
+too. The clock first needs the network's certificate authority (CA), so it
+can't be tricked into sending your password to a look-alike network. Ask IT
+for the CA certificate file, then:
+
+```
+wifi add-eap "<name>" <username> <password> [priority]
+python tools/wifi_ca.py "<name>" ca.pem      # on the computer, console closed
+```
+
+The password is stored on the clock in plain form like any Wi-Fi password, and
+the clock logs in as you all day. Prefer a device account if IT offers one.
+
 Not supported: hidden networks, 5 GHz-only networks, networks that need a
-login page or a username (eduroam, hotel and cafe portals), and names or
-passwords with non-ASCII characters (accents, emoji, curly apostrophes).
+login page (hotel and cafe portals), enterprise networks that need a client
+certificate (EAP-TLS), and names or passwords with non-ASCII characters
+(accents, emoji, curly apostrophes).
 
 ## Location
 

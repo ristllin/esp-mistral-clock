@@ -95,6 +95,8 @@ than run with the character dropped.
 |---|---|
 | `wifi scan` | Scan all channels; list in-range SSIDs with RSSI |
 | `wifi add <ssid> <pass> [prio]` | Save a network (fixed `****` mask, never the password); an optional priority inserts it at that position |
+| `wifi add-eap <ssid> <user> <pass> [prio]` | Save a WPA2-Enterprise network (PEAP or EAP-TTLS, MSCHAPv2 inner); the password is masked as above. Re-adding keeps a pinned CA |
+| `wifi ca <ssid> begin \| add <b64> \| save \| clear` | Pin the RADIUS server's CA (base64 DER, sent in chunks; `save` checks it is a CA certificate and prints its subject and validity). Use `tools/wifi_ca.py` |
 | `wifi remove <ssid>` | Remove a saved network |
 | `wifi list` | Saved networks in priority order (names shown) |
 | `wifi reorder <ssid> <n>` | Move a network to priority `n` (strict order) |
@@ -107,6 +109,17 @@ channel) with exponential backoff; it needs no USB host. Multiple networks
 are kept in NVS with priorities. NVS is not encrypted (no flash encryption
 on this hobby build): erase the flash (`esptool erase_flash`) before giving
 the board away.
+
+WPA2-Enterprise networks (`add-eap`) keep the password in the same record;
+the username and the pinned CA (DER, up to 2 KB) sit in a per-network NVS
+blob (key `e` + FNV-1a hash of the SSID). A network without a pinned CA is
+skipped: the supplicant would otherwise hand the credentials to any RADIUS
+server that answers. There is no server-name check, so pin a CA that only
+signs the network's RADIUS servers (a private CA), not a public one. The
+supplicant keeps a copy of the password in RAM while connected (it needs it
+to re-authenticate). PEAP's TLS session needs about 12 KB of free heap next
+to the framebuffer; the Wi-Fi driver's IRAM options are off for this
+(`sdkconfig.defaults`).
 
 ### Weather / location (Open-Meteo + airport observations, no API keys; Europe/London, DST via TZ string)
 
@@ -188,7 +201,8 @@ Espressif USB device. Outputs go to `logs/` (not committed).
 | `console.py` | Serial console helper: `boot`, `cmd "..." "..."`, `raw CMD SECONDS`, `monitor SECONDS` |
 | `fbdump.py` | `fb dump` to a validated PNG (row and whole-buffer fletcher16 checksums, little-endian RGB565) |
 | `validate_e2e.py` | Scripted end-to-end validation over serial: Wi-Fi, time, weather, location, themes, scenes, screensaver, touch, offline reboot and DST edges; writes `logs/e2e/` |
-| `console_check.py` | Console behaviour checks (`help`, menu on a fresh terminal, CR+LF handling, non-ASCII input) |
+| `console_check.py` | Console behaviour checks (`help`, menu on a fresh terminal, CR+LF handling, non-ASCII input, `wifi add-eap` password mask) |
+| `wifi_ca.py` | Pin a WPA2-Enterprise network's CA from a PEM or DER file (`wifi ca` in base64 chunks); prints the SHA-256 fingerprint to check |
 | `auto_theme_check.py` | Steps the debug clock through a whole day and checks the auto theme |
 | `reset.py` | Reset the board through the USB-Serial/JTAG auto-reset lines |
 | `gen_pixel_art.py`, `gen_sprite_art.py`, `gen_chaton.py`, `gen_clock_digits.py` | Generate the pixel-art headers in `src/assets/` from authored grids |
