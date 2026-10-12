@@ -8,10 +8,17 @@
  * Selection: among saved networks found in a scan, the strongest RSSI wins;
  * ties within 3 dB go to the lower priority number. Retries use exponential
  * backoff (1 s doubling to 60 s), reset after a successful connection.
- * The device needs no USB host: the wifi task runs from boot. */
+ * The device needs no USB host: the wifi task runs from boot.
+ *
+ * WPA2-Enterprise (PEAP / EAP-TTLS with a username and password): the
+ * password lives in the record like a PSK; the username and the pinned CA
+ * certificate live in a per-network blob (key "e" + SSID hash). A network
+ * without a pinned CA is never joined: the supplicant would hand the
+ * credentials to any RADIUS server that answers, including an evil twin. */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,6 +30,9 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs.h"
+#include "esp_eap_client.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/x509_crt.h"
 
 #include "wifi_mgr.h"
 
@@ -39,8 +49,20 @@ typedef struct {
     char pass[65];
     uint8_t prio;        /* 1 = highest priority */
     uint8_t in_use;
-    uint8_t reserved[2];
+    uint8_t eap;         /* WPA2-Enterprise; was reserved (0) in MWH1 */
+    uint8_t eap_ready;   /* a CA is pinned: the network may be joined */
 } wifi_net_t;
+
+/* Enterprise settings, one NVS blob per network. Saved without the unused
+ * tail of ca[]. */
+#define EAP_CA_MAX      2048
+typedef struct {
+    char ssid[33];       /* owner: guards against an SSID-hash collision */
+    char user[65];
+    uint16_t ca_len;     /* DER bytes; 0 = no CA pinned */
+    uint8_t ca[EAP_CA_MAX];
+} eap_cfg_t;
+#define EAP_HDR_LEN     offsetof(eap_cfg_t, ca)
 
 typedef struct {
     uint32_t magic;
@@ -132,6 +154,59 @@ static wifi_net_t *store_find_free(void)
     return NULL;
 }
 
+/* --- enterprise blobs --- */
+
+static void eap_key(const char *ssid, char key[NVS_KEY_NAME_MAX_SIZE])
+{
+    uint32_t h = 2166136261u;            /* FNV-1a: SSIDs exceed NVS keys */
+    for (const char *c = ssid; *c; c++) { h = (h ^ (uint8_t)*c) * 16777619u; }
+    snprintf(key, NVS_KEY_NAME_MAX_SIZE, "e%08lx", (unsigned long)h);
+}
+
+/* Load the blob of `ssid` into *cfg; false (and *cfg cleared to the SSID
+ * only) when there is none. */
+static bool eap_load(const char *ssid, eap_cfg_t *cfg)
+{
+    char key[NVS_KEY_NAME_MAX_SIZE];
+    eap_key(ssid, key);
+    memset(cfg, 0, sizeof(*cfg));
+    nvs_handle_t h;
+    bool ok = false;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(*cfg);
+        ok = nvs_get_blob(h, key, cfg, &len) == ESP_OK && len >= EAP_HDR_LEN &&
+             cfg->ca_len <= EAP_CA_MAX && len == EAP_HDR_LEN + cfg->ca_len &&
+             strncmp(cfg->ssid, ssid, 32) == 0;
+        nvs_close(h);
+    }
+    if (!ok) { memset(cfg, 0, sizeof(*cfg)); }
+    strlcpy(cfg->ssid, ssid, sizeof(cfg->ssid));
+    cfg->user[sizeof(cfg->user) - 1] = '\0';
+    return ok;
+}
+
+static esp_err_t eap_save(const eap_cfg_t *cfg)
+{
+    char key[NVS_KEY_NAME_MAX_SIZE];
+    eap_key(cfg->ssid, key);
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h), TAG, "nvs open");
+    esp_err_t err = nvs_set_blob(h, key, cfg, EAP_HDR_LEN + cfg->ca_len);
+    if (err == ESP_OK) { err = nvs_commit(h); }
+    nvs_close(h);
+    return err;
+}
+
+static void eap_erase(const char *ssid)
+{
+    char key[NVS_KEY_NAME_MAX_SIZE];
+    eap_key(ssid, key);
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) { return; }
+    if (nvs_erase_key(h, key) == ESP_OK) { nvs_commit(h); }
+    nvs_close(h);
+}
+
 /* Physically sort the slot array by priority (stable insertion sort, used
  * slots compacted to the front) and reassign priorities as a strict 1..N
  * order. Call after add/reorder so two networks can never share a priority
@@ -219,7 +294,7 @@ static const wifi_net_t *select_best(const wifi_ap_record_t *aps, int n,
     int best_idx = -1;
     for (int i = 0; i < n; i++) {
         const wifi_net_t *net = store_find((const char *)aps[i].ssid);
-        if (!net) { continue; }
+        if (!net || (net->eap && !net->eap_ready)) { continue; }
         int rssi = aps[i].rssi;
         bool better = rssi > best_rssi + 3 ||
                       (rssi >= best_rssi - 3 && rssi <= best_rssi + 3 && net->prio < best_prio);
@@ -232,11 +307,45 @@ static const wifi_net_t *select_best(const wifi_ap_record_t *aps, int n,
     return best;
 }
 
+/* Hand the enterprise credentials of `net` to the supplicant, or turn
+ * enterprise mode off for a PSK network. The supplicant copies identity
+ * and password but keeps a pointer to the CA, hence the static blob
+ * (wifi task only). */
+static bool eap_configure(const wifi_net_t *net)
+{
+    static eap_cfg_t eap;
+    esp_wifi_sta_enterprise_disable();
+    esp_eap_client_clear_identity();
+    esp_eap_client_clear_username();
+    esp_eap_client_clear_password();
+    esp_eap_client_clear_ca_cert();
+    if (!net->eap) { return true; }
+    if (!eap_load(net->ssid, &eap) || eap.ca_len == 0 || !eap.user[0]) {
+        ESP_LOGW(TAG, "%s: enterprise settings missing, not joining", net->ssid);
+        return false;
+    }
+    int ulen = (int)strlen(eap.user);
+    esp_err_t err = esp_eap_client_set_identity((const uint8_t *)eap.user, ulen);
+    if (err == ESP_OK) { err = esp_eap_client_set_username((const uint8_t *)eap.user, ulen); }
+    if (err == ESP_OK) {
+        err = esp_eap_client_set_password((const uint8_t *)net->pass, (int)strlen(net->pass));
+    }
+    if (err == ESP_OK) { err = esp_eap_client_set_ca_cert(eap.ca, eap.ca_len); }
+    if (err == ESP_OK) { err = esp_wifi_sta_enterprise_enable(); }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s: enterprise setup failed: %s", net->ssid, esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
 static void connect_to(const wifi_net_t *net, const wifi_ap_record_t *ap)
 {
     wifi_config_t cfg = {0};
     strlcpy((char *)cfg.sta.ssid, net->ssid, sizeof(cfg.sta.ssid));
-    strlcpy((char *)cfg.sta.password, net->pass, sizeof(cfg.sta.password));
+    if (!net->eap) {
+        strlcpy((char *)cfg.sta.password, net->pass, sizeof(cfg.sta.password));
+    }
     if (ap) {
         /* pin the exact AP we measured: with several APs sharing an SSID
          * the supplicant must not wander to a weaker one */
@@ -252,6 +361,8 @@ static void connect_to(const wifi_net_t *net, const wifi_ap_record_t *ap)
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
     /* the driver keeps its own copy: wipe the password from the stack */
     secure_wipe(&cfg, sizeof(cfg));
+    /* after set_config, as in the IDF wifi_enterprise example */
+    if (err == ESP_OK && !eap_configure(net)) { return; }
     if (err == ESP_OK) { err = esp_wifi_connect(); }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "connect to %s failed: %s", net->ssid, esp_err_to_name(err));
@@ -389,6 +500,11 @@ static const char *auth_str(wifi_auth_mode_t mode)
     case WIFI_AUTH_WPA_WPA2_PSK: return "wpa/wpa2";
     case WIFI_AUTH_WPA3_PSK: return "wpa3";
     case WIFI_AUTH_WPA2_WPA3_PSK: return "wpa2/wpa3";
+    case WIFI_AUTH_WPA_ENTERPRISE: return "wpa-ent";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "wpa2-ent";
+    case WIFI_AUTH_WPA3_ENTERPRISE: return "wpa3-ent";
+    case WIFI_AUTH_WPA2_WPA3_ENTERPRISE: return "wpa2/3-ent";
+    case WIFI_AUTH_WPA3_ENT_192: return "wpa3-192";
     default: return "?";
     }
 }
@@ -432,19 +548,12 @@ static int wifi_scan_cmd(void)
     return 0;
 }
 
-static int wifi_add_cmd(int argc, char **argv)
+/* Save (or overwrite) a network; prio_s is the optional priority argument.
+ * A PSK save drops any enterprise blob the SSID had. */
+static int save_net(const char *ssid, const char *pass, const char *prio_s,
+                    bool eap, bool eap_ready)
 {
-    /* argv (after "add"): <ssid> <pass> [prio] */
-    if (argc < 3) {
-        printf("usage: wifi add <ssid> <pass> [prio]\n");
-        return 1;
-    }
-    const char *ssid = argv[1];
-    const char *pass = argv[2];
-    if (strlen(ssid) == 0 || strlen(ssid) > 32 || strlen(pass) > 64) {
-        printf("ssid 1..32 chars, pass 0..64 chars\n");
-        return 1;
-    }
+    if (!eap) { eap_erase(ssid); }
     xSemaphoreTake(g_store_lock, portMAX_DELAY);
     wifi_net_t *net = store_find(ssid);
     bool is_new = false;
@@ -461,9 +570,11 @@ static int wifi_add_cmd(int argc, char **argv)
     memset(net, 0, sizeof(*net));
     strlcpy(net->ssid, ssid, sizeof(net->ssid));
     strlcpy(net->pass, pass, sizeof(net->pass));
-    if (argc > 3) {
+    net->eap = eap;
+    net->eap_ready = eap_ready;
+    if (prio_s) {
         /* insert at that position: networks at or after it move down */
-        int prio = atoi(argv[3]);
+        int prio = atoi(prio_s);
         prio = (prio < 1) ? 1 : (prio > WIFI_MAX_NETS) ? WIFI_MAX_NETS : prio;
         for (int i = 0; i < WIFI_MAX_NETS; i++) {
             wifi_net_t *o = &g_store.nets[i];
@@ -490,6 +601,147 @@ static int wifi_add_cmd(int argc, char **argv)
     return 0;
 }
 
+static int wifi_add_cmd(int argc, char **argv)
+{
+    /* argv (after "add"): <ssid> <pass> [prio] */
+    if (argc < 3) {
+        printf("usage: wifi add <ssid> <pass> [prio]\n");
+        return 1;
+    }
+    const char *ssid = argv[1];
+    const char *pass = argv[2];
+    if (strlen(ssid) == 0 || strlen(ssid) > 32 || strlen(pass) > 64) {
+        printf("ssid 1..32 chars, pass 0..64 chars\n");
+        return 1;
+    }
+    return save_net(ssid, pass, argc > 3 ? argv[3] : NULL, false, false);
+}
+
+static int wifi_add_eap_cmd(int argc, char **argv)
+{
+    /* argv (after "add-eap"): <ssid> <user> <pass> [prio] */
+    if (argc < 4) {
+        printf("usage: wifi add-eap <ssid> <user> <pass> [prio]\n");
+        return 1;
+    }
+    const char *ssid = argv[1];
+    const char *user = argv[2];
+    const char *pass = argv[3];
+    if (strlen(ssid) == 0 || strlen(ssid) > 32 || strlen(user) == 0 ||
+        strlen(user) > 64 || strlen(pass) > 64) {
+        printf("ssid 1..32 chars, user 1..64 chars, pass 0..64 chars\n");
+        return 1;
+    }
+    static eap_cfg_t eap;           /* console task only */
+    eap_load(ssid, &eap);           /* re-adding keeps a pinned CA */
+    strlcpy(eap.user, user, sizeof(eap.user));
+    esp_err_t err = eap_save(&eap);
+    if (err != ESP_OK) {
+        printf("nvs save failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    int rc = save_net(ssid, pass, argc > 4 ? argv[4] : NULL, true, eap.ca_len > 0);
+    if (rc == 0 && eap.ca_len == 0) {
+        printf("no CA pinned yet: %s will not be joined until one is "
+               "(tools/wifi_ca.py, or wifi ca)\n", ssid);
+    }
+    return rc;
+}
+
+/* `wifi ca <ssid> begin | add <base64> | save | clear`: pin the CA that signed the
+ * RADIUS server certificate. The DER certificate arrives base64-encoded in
+ * chunks (a console line holds 511 characters) between `begin` and `save`;
+ * `save` decodes, checks and stores it. `clear` unpins the CA. */
+static char s_ca_b64[EAP_CA_MAX * 4 / 3 + 4];
+static size_t s_ca_b64_len;
+static char s_ca_ssid[33];
+
+static int wifi_ca_cmd(int argc, char **argv)
+{
+    /* argv (after "ca"): <ssid> begin | add <b64> | save | clear */
+    if (argc < 3 || (strcmp(argv[2], "add") == 0 && argc < 4)) {
+        printf("usage: wifi ca <ssid> begin | add <base64> | save | clear\n");
+        return 1;
+    }
+    const char *ssid = argv[1];
+    const char *op = argv[2];
+    xSemaphoreTake(g_store_lock, portMAX_DELAY);
+    wifi_net_t *net = store_find(ssid);
+    bool is_eap = net && net->eap;
+    xSemaphoreGive(g_store_lock);
+    if (!is_eap) {
+        printf("not an enterprise network: %s (wifi add-eap first)\n", ssid);
+        return 1;
+    }
+    if (strcmp(op, "begin") == 0 || strncmp(s_ca_ssid, ssid, 32) != 0) {
+        strlcpy(s_ca_ssid, ssid, sizeof(s_ca_ssid));   /* one SSID at a time */
+        s_ca_b64_len = 0;
+    }
+    if (strcmp(op, "begin") == 0) {
+        printf("ok 0\n");
+        return 0;
+    }
+    if (strcmp(op, "add") == 0) {
+        size_t n = strlen(argv[3]);
+        if (s_ca_b64_len + n >= sizeof(s_ca_b64)) {
+            s_ca_b64_len = 0;
+            printf("certificate too large (%d bytes DER max); start over\n", EAP_CA_MAX);
+            return 1;
+        }
+        memcpy(s_ca_b64 + s_ca_b64_len, argv[3], n);
+        s_ca_b64_len += n;
+        printf("ok %u\n", (unsigned)s_ca_b64_len);
+        return 0;
+    }
+    static eap_cfg_t eap;           /* console task only */
+    eap_load(ssid, &eap);
+    if (strcmp(op, "clear") == 0) {
+        eap.ca_len = 0;
+    } else if (strcmp(op, "save") == 0) {
+        size_t der_len = 0;
+        int rc = mbedtls_base64_decode(eap.ca, sizeof(eap.ca), &der_len,
+                                       (const uint8_t *)s_ca_b64, s_ca_b64_len);
+        s_ca_b64_len = 0;
+        mbedtls_x509_crt *crt = calloc(1, sizeof(*crt));
+        if (!crt) { return 1; }
+        mbedtls_x509_crt_init(crt);
+        if (rc == 0) { rc = mbedtls_x509_crt_parse_der(crt, eap.ca, der_len); }
+        if (rc == 0 && !crt->MBEDTLS_PRIVATE(ca_istrue)) { rc = -1; }
+        if (rc == 0) {
+            char dn[192];
+            mbedtls_x509_dn_gets(dn, sizeof(dn), &crt->subject);
+            printf("CA: %s\n  valid %04d-%02d-%02d .. %04d-%02d-%02d\n", dn,
+                   crt->valid_from.year, crt->valid_from.mon, crt->valid_from.day,
+                   crt->valid_to.year, crt->valid_to.mon, crt->valid_to.day);
+        }
+        mbedtls_x509_crt_free(crt);
+        free(crt);
+        if (rc != 0) {
+            printf("not a valid CA certificate (base64 DER expected); start over\n");
+            return 1;
+        }
+        eap.ca_len = (uint16_t)der_len;
+    } else {
+        printf("usage: wifi ca <ssid> begin | add <base64> | save | clear\n");
+        return 1;
+    }
+    esp_err_t err = eap_save(&eap);
+    xSemaphoreTake(g_store_lock, portMAX_DELAY);
+    net = store_find(ssid);
+    if (net && err == ESP_OK) {
+        net->eap_ready = eap.ca_len > 0;
+        err = store_save();
+    }
+    xSemaphoreGive(g_store_lock);
+    if (err != ESP_OK) {
+        printf("nvs save failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf(eap.ca_len ? "CA pinned for %s\n" : "CA cleared for %s: it will not be joined\n", ssid);
+    if (eap.ca_len && g_wifi_task) { xTaskNotifyGive(g_wifi_task); }
+    return 0;
+}
+
 static int wifi_remove_cmd(int argc, char **argv)
 {
     if (argc < 2) {
@@ -510,6 +762,7 @@ static int wifi_remove_cmd(int argc, char **argv)
     esp_err_t err = store_save();
     int count = g_store.count;
     xSemaphoreGive(g_store_lock);
+    eap_erase(argv[1]);
     printf("removed %s (%d network(s) left)\n", argv[1], count);
     if (was_connected) {
         printf("disconnecting; will pick another saved network\n");
@@ -525,7 +778,9 @@ static int wifi_list_cmd(void)
     for (int i = 0; i < WIFI_MAX_NETS; i++) {
         if (!g_store.nets[i].in_use) { continue; }
         bool conn = g_connected && strncmp(g_ssid, g_store.nets[i].ssid, 32) == 0;
-        printf("  prio %d  %s%s\n", g_store.nets[i].prio, g_store.nets[i].ssid,
+        const wifi_net_t *n = &g_store.nets[i];
+        printf("  prio %d  %s%s%s\n", n->prio, n->ssid,
+               !n->eap ? "" : n->eap_ready ? "  [enterprise]" : "  [enterprise, no CA]",
                conn ? "  [connected]" : "");
     }
     xSemaphoreGive(g_store_lock);
@@ -618,12 +873,14 @@ static int wifi_cmd(int argc, char **argv)
     }
     if (strcmp(argv[1], "scan") == 0)    { return wifi_scan_cmd(); }
     if (strcmp(argv[1], "add") == 0)     { return wifi_add_cmd(argc - 1, argv + 1); }
+    if (strcmp(argv[1], "add-eap") == 0) { return wifi_add_eap_cmd(argc - 1, argv + 1); }
+    if (strcmp(argv[1], "ca") == 0)      { return wifi_ca_cmd(argc - 1, argv + 1); }
     if (strcmp(argv[1], "remove") == 0)  { return wifi_remove_cmd(argc - 1, argv + 1); }
     if (strcmp(argv[1], "list") == 0)    { return wifi_list_cmd(); }
     if (strcmp(argv[1], "reorder") == 0) { return wifi_reorder_cmd(argc - 1, argv + 1); }
     if (strcmp(argv[1], "status") == 0)  { return wifi_status_cmd(); }
     if (strcmp(argv[1], "connect") == 0) { return wifi_connect_cmd(); }
-    printf("usage: wifi [scan | add <ssid> <pass> [prio] | remove <ssid> | list | reorder <ssid> <prio> | status | connect]\n");
+    printf("usage: wifi [scan | add <ssid> <pass> [prio] | add-eap <ssid> <user> <pass> [prio] | ca <ssid> begin|add <b64>|save|clear | remove <ssid> | list | reorder <ssid> <prio> | status | connect]\n");
     return 1;
 }
 
@@ -631,7 +888,7 @@ void wifi_mgr_register_commands(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "wifi",
-        .help = "wifi scan | add <ssid> <pass> [prio] | remove <ssid> | list | reorder <ssid> <prio> | status | connect",
+        .help = "wifi scan | add <ssid> <pass> [prio] | add-eap <ssid> <user> <pass> [prio] | ca <ssid> begin|add <b64>|save|clear | remove <ssid> | list | reorder <ssid> <prio> | status | connect",
         .hint = NULL,
         .func = &wifi_cmd,
     };

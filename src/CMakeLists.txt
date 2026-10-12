@@ -24,4 +24,4 @@ idf_component_register(SRCS "main.c"
                              esp_lcd_touch esp_lvgl_port lvgl nvs_flash esp_driver_i2c
                              esp_driver_usb_serial_jtag console esp_system
                              esp_wifi esp_netif esp_event lwip esp_timer
-                             esp_http_client mbedtls json)
+                             esp_http_client mbedtls json wpa_supplicant)

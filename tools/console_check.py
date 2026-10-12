@@ -5,6 +5,8 @@ Verifies on the real device over USB-Serial/JTAG:
   - `help` works and lists every command group; `help wifi` shows its usage
   - CR+LF, bare LF and bare CR each count as one line ending (no menu
     reprint after a command)
+  - `wifi add-eap` masks the password and is refused a CA it cannot parse;
+    the test network is removed again
   - a freshly opened terminal sees the menu (Enter, or the first keystroke
     after >= 3 s of silence); the USB-Serial/JTAG has no DTR/port-open
     signal, so "first input after silence" is the trigger (see src/console.c)
@@ -118,6 +120,28 @@ def main():
           and b"ssw" not in out5 and b"not run" in out5)
     ser.write(b"wifi remove \"x y\"\r\n")         # in case refusal broke
     rd(ser, 1.5)
+    ser.close()
+
+    # --- wifi add-eap: password masked, CA required ----------------------
+    time.sleep(1.0)
+    ser = fresh_open(port)
+    ser.write(b"\n")
+    rd(ser, 1.5)
+    ser.write(b'wifi add-eap "x y" tuser s3cretpw\r\n')
+    out5 = rd(ser, 2)
+    check("add-eap masks the password",
+          b"s3cretpw" not in out5 and b"tuser****" in out5)
+    check("add-eap warns until a CA is pinned", b"no CA pinned" in out5)
+    ser.write(b"wifi list\r\n")
+    out5 += rd(ser, 1.5)
+    check("list marks an enterprise network without CA",
+          b"x y  [enterprise, no CA]" in out5)
+    ser.write(b'wifi ca "x y" save\r\n')
+    out5 += rd(ser, 1.5)
+    check("ca save refuses an empty certificate", b"not a valid CA" in out5)
+    ser.write(b'wifi remove "x y"\r\n')
+    out5 += rd(ser, 1.5)
+    check("enterprise test network removed", b"removed x y" in out5)
     ser.close()
 
     # --- terminal-open: Enter after silence -------------------------------

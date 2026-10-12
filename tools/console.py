@@ -76,10 +76,12 @@ def fw_version():
 
 
 def redact(cmd):
-    """Hide the password of `wifi add <ssid> <pass> [prio]` in messages."""
+    """Hide the password of `wifi add <ssid> <pass> [prio]` and
+    `wifi add-eap <ssid> <user> <pass> [prio]` in messages."""
     parts = cmd.split()
-    if len(parts) >= 4 and parts[:2] == ["wifi", "add"]:
-        parts[3] = "<redacted>"
+    i = {"add": 3, "add-eap": 4}.get(parts[1] if len(parts) > 1 else "")
+    if parts[:1] == ["wifi"] and i and len(parts) > i:
+        parts[i] = "<redacted>"
         return " ".join(parts)
     return cmd
 
