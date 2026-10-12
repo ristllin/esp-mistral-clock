@@ -135,8 +135,12 @@ wifi add "My Network" my-password
 wifi status
 ```
 
-Put the network name in quotes if it has spaces. The password is masked while
-you type and is never printed.
+Put the network name in quotes if it has spaces (straight `"` or the curly
+“smart” quotes Notes and chat apps insert both work). The console takes plain
+ASCII only: a line with any other special character (an accent, an emoji, a
+curly apostrophe as in `Roy’s iPhone`) shows it as `?` and is refused, so
+nothing wrong is saved. The password is masked while you type and is never
+printed.
 
 ![Adding Wi-Fi](docs/setup/3-wifi.png)
 
@@ -179,8 +183,9 @@ the same way, any time, from any computer: plug in USB, open the console
 | `wifi reorder "<name>" <priority>` | Change a network's priority |
 | `wifi status` | Current connection |
 
-Not supported: hidden networks, 5 GHz-only networks, and networks that need a
-login page or a username (eduroam, hotel and cafe portals).
+Not supported: hidden networks, 5 GHz-only networks, networks that need a
+login page or a username (eduroam, hotel and cafe portals), and names or
+passwords with non-ASCII characters (accents, emoji, curly apostrophes).
 
 ## Location
 

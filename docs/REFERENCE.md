@@ -84,6 +84,11 @@ command with its usage. See the command reference below.
 
 Wi-Fi passwords are never printed, echoed or logged (a fixed `****` mask).
 
+Input is read as UTF-8. Curly double quotes (“ ”) count as `"` and no-break
+spaces as a space; a line with any other non-ASCII character (including
+curly single quotes) is echoed with `?` and refused ("not run: ...") rather
+than run with the character dropped.
+
 ### Wi-Fi (NVS, priority-ordered, passwords never logged)
 
 | Command | Effect |
@@ -183,7 +188,7 @@ Espressif USB device. Outputs go to `logs/` (not committed).
 | `console.py` | Serial console helper: `boot`, `cmd "..." "..."`, `raw CMD SECONDS`, `monitor SECONDS` |
 | `fbdump.py` | `fb dump` to a validated PNG (row and whole-buffer fletcher16 checksums, little-endian RGB565) |
 | `validate_e2e.py` | Scripted end-to-end validation over serial: Wi-Fi, time, weather, location, themes, scenes, screensaver, touch, offline reboot and DST edges; writes `logs/e2e/` |
-| `console_check.py` | Console behaviour checks (`help`, menu on a fresh terminal, CR+LF handling) |
+| `console_check.py` | Console behaviour checks (`help`, menu on a fresh terminal, CR+LF handling, non-ASCII input) |
 | `auto_theme_check.py` | Steps the debug clock through a whole day and checks the auto theme |
 | `reset.py` | Reset the board through the USB-Serial/JTAG auto-reset lines |
 | `gen_pixel_art.py`, `gen_sprite_art.py`, `gen_chaton.py`, `gen_clock_digits.py` | Generate the pixel-art headers in `src/assets/` from authored grids |

@@ -8,6 +8,9 @@ Verifies on the real device over USB-Serial/JTAG:
   - a freshly opened terminal sees the menu (Enter, or the first keystroke
     after >= 3 s of silence); the USB-Serial/JTAG has no DTR/port-open
     signal, so "first input after silence" is the trigger (see src/console.c)
+  - UTF-8 input: curly double quotes fold to '"'; a line with any other
+    non-ASCII character (or a truncated sequence) is refused and not run,
+    and a refused `wifi add` still masks the password
 
 Usage: console_check.py [--port PORT]
 Port: --port, else $CLOCK_PORT, else the single connected Espressif device.
@@ -88,6 +91,33 @@ def main():
     out2c = rd(ser, 1.5)
     check("bare CR prints NO menu", out2c.count(MENU) == 0,
           f"menus={out2c.count(MENU)}")
+    ser.close()
+
+    # --- UTF-8 input: curly quotes fold, other non-ASCII is refused ------
+    ser = fresh_open(port)
+    ser.write(b"\r\n")
+    rd(ser, 1.5)                                   # absorb the menu
+    ser.write("help “wifi”\r\n".encode())         # runs as help "wifi"
+    out5 = rd(ser, 2)
+    check("curly double quotes fold to ASCII", b"wifi scan" in out5)
+    ser.write("help ‘wifi’\r\n".encode())         # single curly: refused
+    out5 = rd(ser, 2)
+    check("curly single quotes refused", b"not run" in out5
+          and b"wifi scan" not in out5)
+    ser.write("wifi remove \"Café\"\r\n".encode())
+    out5 = rd(ser, 2)
+    check("non-ASCII line refused, shown as '?'",
+          b"not run" in out5 and b"Caf?" in out5)
+    ser.write(b"version \xe2\x80\r\n")             # truncated sequence
+    out5 = rd(ser, 2)
+    check("truncated UTF-8 refused", b"not run" in out5
+          and VERSION_RE.search(out5) is None)
+    ser.write("wifi add \"x y\" pässwörd\r\n".encode())
+    out5 = rd(ser, 2)
+    check("refused wifi add masks the password", b"****" in out5
+          and b"ssw" not in out5 and b"not run" in out5)
+    ser.write(b"wifi remove \"x y\"\r\n")         # in case refusal broke
+    rd(ser, 1.5)
     ser.close()
 
     # --- terminal-open: Enter after silence -------------------------------

@@ -3,7 +3,8 @@
  * esp_console's linenoise REPL is not used: it ignores empty lines and
  * offers no hook to show a short menu when a terminal opens. This REPL
  * prints the menu at start and on every empty line, echoes input
- * byte-by-byte (terminals on serial devices normally have local echo off)
+ * character by character (UTF-8 decoded, see the line editor; terminals
+ * on serial devices normally have local echo off)
  * and runs everything through esp_console_run(), so every
  * menu action is also a one-line command and `help` lists them all.
  *
@@ -140,14 +141,28 @@ static void register_core_commands(void)
 }
 
 /* --- line editor -------------------------------------------------------
- * Byte-wise input with per-byte echo. The password argument of
+ * Input is decoded as UTF-8, one s_line slot per character: curly double
+ * quotes fold to '"' and no-break spaces to ' '; any other non-ASCII
+ * character is stored as NON_ASCII_MARK (echoed '?') and a line holding
+ * one is refused, never run with the character missing. Single curly
+ * quotes are refused too: folding ’ to ' would silently save the wrong
+ * name (e.g. an iPhone hotspot "Roy’s iPhone"). The password argument of
  * `wifi add <ssid> <pass>` is not echoed: a fixed "****" is printed once
  * instead (passwords are never printed or logged); the real line still
  * reaches esp_console_run. */
 
+/* Stand-in stored in s_line for a non-ASCII character the console cannot
+ * take (one slot per character, so backspace removes it whole). A line
+ * holding one is refused instead of run with the character missing. */
+#define NON_ASCII_MARK 0x80      /* never a raw byte: those are decoded */
+
 static char s_line[CONSOLE_LINE_MAX];
 static size_t s_len;
 static bool s_saw_cr;              /* de-duplicate CRLF */
+static uint8_t s_u8_need;          /* UTF-8 continuation bytes still due */
+static uint32_t s_u8_cp;           /* code point being decoded */
+static uint32_t s_u8_min;          /* smallest code point for its length */
+static bool s_too_long;            /* input was dropped: refuse the line */
 static TickType_t s_last_input;
 static bool s_menu_armed;          /* menu prints on the next input byte */
 static bool s_host_seen;           /* host connection already announced */
@@ -201,26 +216,69 @@ static void submit_line(void)
     } else {
         s_line[s_len] = '\0';
         int ret = 0;
-        esp_err_t err = esp_console_run(s_line, &ret);
-        if (err == ESP_ERR_NOT_FOUND) {
-            /* name only: the arguments may hold a mistyped password */
-            const char *cmd = s_line + strspn(s_line, " ");
-            printf("unknown command: %.*s (try 'help')\n",
-                   (int)strcspn(cmd, " "), cmd);
-        } else if (err != ESP_OK) {
-            printf("error: %s\n", esp_err_to_name(err));
+        if (s_too_long) {
+            printf("not run: the line is longer than %d characters\n",
+                   CONSOLE_LINE_MAX - 1);
+        } else if (memchr(s_line, NON_ASCII_MARK, s_len)) {
+            /* running it without the character would e.g. save the wrong
+             * Wi-Fi name; nothing of the line is printed (password) */
+            printf("not run: the line has a character the console cannot "
+                   "take (shown as '?'); retype it in plain ASCII\n");
+        } else {
+            esp_err_t err = esp_console_run(s_line, &ret);
+            if (err == ESP_ERR_NOT_FOUND) {
+                /* name only: the arguments may hold a mistyped password */
+                const char *cmd = s_line + strspn(s_line, " ");
+                printf("unknown command: %.*s (try 'help')\n",
+                       (int)strcspn(cmd, " "), cmd);
+            } else if (err != ESP_OK) {
+                printf("error: %s\n", esp_err_to_name(err));
+            }
         }
-        /* the line may hold a `wifi add` password: do not keep it around */
-        memset(s_line, 0, s_len);
+        /* the line may hold a `wifi add` password: do not keep it around,
+         * including bytes past s_len left over from backspacing */
+        memset(s_line, 0, sizeof(s_line));
     }
     s_len = 0;
+    s_too_long = false;
     printf(CONSOLE_PROMPT);
     fflush(stdout);
 }
 
-static void handle_byte(int c)
+/* Fold UTF-8 input into one char per character. Curly double quotes
+ * (macOS smart quotes, text pasted from notes or chat) become '"', so
+ * `wifi add “My Network” pass` works like the straight-quoted spelling,
+ * and no-break spaces become ' ' so pasted separators still split the
+ * arguments (and the password mask still starts). Any other character,
+ * and any invalid or overlong sequence (RFC 3629), becomes NON_ASCII_MARK.
+ * Returns -1 while a sequence is incomplete. */
+static int fold_utf8(int c)
 {
-    saver_notify_console();   /* console activity resets the saver idle timer */
+    if (c < 0x80) {
+        return c;
+    }
+    if (c >= 0xC2 && c <= 0xF4) {       /* lead byte */
+        static const uint32_t min_cp[] = { 0, 0x80, 0x800, 0x10000 };
+        s_u8_need = (c >= 0xF0) ? 3 : (c >= 0xE0) ? 2 : 1;
+        s_u8_cp = (uint32_t)c & (0x3Fu >> s_u8_need);
+        s_u8_min = min_cp[s_u8_need];
+        return -1;
+    }
+    if (c >= 0xC0 || s_u8_need == 0) {  /* invalid lead or stray byte */
+        return NON_ASCII_MARK;
+    }
+    s_u8_cp = (s_u8_cp << 6) | ((uint32_t)c & 0x3F);
+    if (--s_u8_need) { return -1; }
+    if (s_u8_cp < s_u8_min) { return NON_ASCII_MARK; }   /* overlong */
+    switch (s_u8_cp) {
+    case 0x201C: case 0x201D: return '"';    /* “ ” */
+    case 0x00A0: case 0x2007: case 0x202F: return ' ';   /* no-break */
+    default: return NON_ASCII_MARK;
+    }
+}
+
+static void handle_char(int c)
+{
     if (c == '\r') {
         s_saw_cr = true;
         submit_line();
@@ -243,10 +301,13 @@ static void handle_byte(int c)
         }
         return;
     }
-    if (c < 0x20 || c > 0x7E) {    /* other control bytes: ignore */
+    if ((c < 0x20 || c > 0x7E) && c != NON_ASCII_MARK) {
+        return;                    /* other control bytes: ignore */
+    }
+    if (s_len >= CONSOLE_LINE_MAX - 1) {
+        s_too_long = true;         /* never run a silently cut line */
         return;
     }
-    if (s_len >= CONSOLE_LINE_MAX - 1) { return; }
     bool was_pass = cursor_in_password();
     s_line[s_len++] = (char)c;
     bool mask = cursor_in_password();
@@ -255,9 +316,20 @@ static void handle_byte(int c)
          * per-character '*' would leak the password length */
         printf("****");
     } else if (!mask) {
-        putchar(c);
+        putchar(c == NON_ASCII_MARK ? '?' : c);
     }
     fflush(stdout);
+}
+
+static void handle_byte(int c)
+{
+    saver_notify_console();   /* console activity resets the saver idle timer */
+    if ((c < 0x80 || c >= 0xC0) && s_u8_need) {  /* truncated sequence */
+        s_u8_need = 0;
+        handle_char(NON_ASCII_MARK);
+    }
+    c = fold_utf8(c);
+    if (c >= 0) { handle_char(c); }
 }
 
 /* One non-blocking byte from stdin, or -1 when nothing is available. */
@@ -300,6 +372,12 @@ static void repl_task(void *arg)
         s_last_input = xTaskGetTickCount();
         if (s_menu_armed) {
             s_menu_armed = false;
+            /* the fresh prompt below starts a new line: drop any partial
+             * one (it may hold a password) instead of running it later */
+            memset(s_line, 0, sizeof(s_line));
+            s_len = 0;
+            s_u8_need = 0;
+            s_too_long = false;
             print_banner_menu();
             printf(CONSOLE_PROMPT);
             fflush(stdout);
